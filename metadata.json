@@ -1,0 +1,8 @@
+{
+  "name": "ListaVoz",
+  "description": "Um aplicativo de lista de compras inteligente focado em comandos de voz para facilitar o seu dia a dia.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
