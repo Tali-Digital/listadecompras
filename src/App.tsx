@@ -6,6 +6,17 @@
 import { useState, useEffect, useRef } from "react";
 import { Mic, Home, ShoppingCart, Trash2, CheckCircle2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { db } from "./lib/firebase";
+import { 
+  collection, 
+  addDoc, 
+  onSnapshot, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy, 
+  serverTimestamp 
+} from "firebase/firestore";
 
 type Tab = "em-casa" | "no-mercado";
 
@@ -13,6 +24,8 @@ interface ShoppingItem {
   id: string;
   name: string;
   createdAt: number;
+  checked: boolean;
+  price?: number;
 }
 
 declare global {
@@ -24,13 +37,17 @@ declare global {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("em-casa");
-  const [items, setItems] = useState<ShoppingItem[]>(() => {
-    const saved = localStorage.getItem("shopping-list");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [items, setItems] = useState<ShoppingItem[]>([]);
   const [isListening, setIsListening] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [isDesktop, setIsDesktop] = useState(window.innerWidth >= 1024);
+  const [isListeningPrice, setIsListeningPrice] = useState(false);
+  const [priceModal, setPriceModal] = useState<{ isOpen: boolean; itemId: string | null; itemName: string }>({
+    isOpen: false,
+    itemId: null,
+    itemName: ""
+  });
+  const [inputPrice, setInputPrice] = useState("");
   
   const recognitionRef = useRef<any>(null);
   const currentTranscriptRef = useRef<string>("");
@@ -43,10 +60,19 @@ export default function App() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // Sync to LocalStorage
+  // Sync from Firestore
   useEffect(() => {
-    localStorage.setItem("shopping-list", JSON.stringify(items));
-  }, [items]);
+    const q = query(collection(db, "shopping-list"), orderBy("createdAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const itemsList = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as ShoppingItem[];
+      setItems(itemsList);
+    });
+    
+    return () => unsubscribe();
+  }, []);
 
   const toggleVoiceRecognition = () => {
     if (isListening) {
@@ -146,22 +172,130 @@ export default function App() {
     currentTranscriptRef.current = "";
   };
 
-  const addItem = (name: string) => {
-    const newItem: ShoppingItem = {
-      id: Math.random().toString(36).substring(2, 11) + Date.now().toString(36),
-      name: name.charAt(0).toUpperCase() + name.slice(1),
-      createdAt: Date.now(),
-    };
-    console.log("Adicionando item:", newItem);
-    setItems((prev) => [newItem, ...prev]);
-    setFeedback(newItem.name);
-    
-    // Clear feedback message after 3 seconds
-    setTimeout(() => setFeedback(null), 3000);
+  const addItem = async (name: string) => {
+    try {
+      const nameCleaned = name.charAt(0).toUpperCase() + name.slice(1);
+      await addDoc(collection(db, "shopping-list"), {
+        name: nameCleaned,
+        createdAt: Date.now(),
+        checked: false,
+      });
+      
+      setFeedback(nameCleaned);
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (error) {
+      console.error("Erro ao adicionar item:", error);
+    }
   };
 
-  const deleteItem = (id: string) => {
-    setItems((prev) => prev.filter(item => item.id !== id));
+  const deleteItem = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "shopping-list", id));
+    } catch (error) {
+      console.error("Erro ao remover item:", error);
+    }
+  };
+
+  const toggleItem = async (id: string, currentChecked: boolean, itemName: string) => {
+    try {
+      const { updateDoc, doc } = await import("firebase/firestore");
+      
+      if (!currentChecked) {
+        // Se estiver marcando como concluído, abre o modal de preço
+        setPriceModal({ isOpen: true, itemId: id, itemName });
+        setInputPrice("");
+      } else {
+        // Se estiver desmarcando, apenas remove o status de checked e o preço (opcional)
+        await updateDoc(doc(db, "shopping-list", id), {
+          checked: false
+        });
+      }
+    } catch (error) {
+      console.error("Erro ao atualizar item:", error);
+    }
+  };
+
+  const handleSavePrice = async () => {
+    if (!priceModal.itemId) return;
+    
+    try {
+      const { updateDoc, doc } = await import("firebase/firestore");
+      // Remove R$, espaços e troca vírgula por ponto
+      const cleanValue = inputPrice.replace(/[R$\s]/g, "").replace(",", ".");
+      const priceValue = parseFloat(cleanValue);
+      
+      await updateDoc(doc(db, "shopping-list", priceModal.itemId), {
+        checked: true,
+        price: isNaN(priceValue) ? 0 : priceValue
+      });
+      
+      setPriceModal({ isOpen: false, itemId: null, itemName: "" });
+      setInputPrice("");
+    } catch (error) {
+      console.error("Erro ao salvar preço:", error);
+    }
+  };
+
+  const toggleVoicePriceRecognition = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      alert("Seu navegador não suporta reconhecimento de voz.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "pt-BR";
+    
+    recognition.onstart = () => setIsListeningPrice(true);
+    
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      let numericValue = transcript.replace(/[^0-9,.]/g, "");
+      
+      if (!numericValue) {
+        const words = transcript.toLowerCase();
+        if (words.includes(" e ")) {
+          const parts = words.split(" e ");
+          const main = parts[0].replace(/[^0-9]/g, "");
+          const cents = parts[1].replace(/[^0-9]/g, "");
+          if (main && cents) numericValue = `${main},${cents}`;
+        }
+      }
+
+      if (numericValue) {
+        setInputPrice(numericValue);
+        // Pequeno delay para o usuário ver o valor preenchido antes de fechar
+        setTimeout(() => {
+          autoSavePrice(numericValue);
+        }, 500);
+      }
+    };
+
+    recognition.onerror = () => setIsListeningPrice(false);
+    recognition.onend = () => setIsListeningPrice(false);
+    
+    recognition.start();
+  };
+
+  const autoSavePrice = async (value: string) => {
+    if (!priceModal.itemId) return;
+    
+    try {
+      const { updateDoc, doc } = await import("firebase/firestore");
+      const cleanValue = value.replace(/[R$\s]/g, "").replace(",", ".");
+      const priceValue = parseFloat(cleanValue);
+      
+      await updateDoc(doc(db, "shopping-list", priceModal.itemId), {
+        checked: true,
+        price: isNaN(priceValue) ? 0 : priceValue
+      });
+      
+      setPriceModal({ isOpen: false, itemId: null, itemName: "" });
+      setInputPrice("");
+    } catch (error) {
+      console.error("Erro ao salvar automaticamente:", error);
+    }
   };
 
   // Shared Voice UI component
@@ -286,9 +420,32 @@ export default function App() {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, scale: 0.95 }}
                   transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                  className="bg-white border border-slate-100 p-4 md:p-5 rounded-[20px] md:rounded-[24px] shadow-[0_4px_12px_rgba(0,0,0,0.02)] flex items-center justify-between group hover:border-primary/30 hover:shadow-md transition-all duration-300"
+                  className={`bg-white border p-4 md:p-5 rounded-[20px] md:rounded-[24px] shadow-[0_4px_12px_rgba(0,0,0,0.02)] flex items-center justify-between group transition-all duration-300 ${
+                    item.checked ? 'border-green-100 bg-green-50/30' : 'border-slate-100 hover:border-primary/30 hover:shadow-md'
+                  }`}
                 >
-                  <span className="font-bold text-slate-700 text-base md:text-lg">{item.name}</span>
+                  <div className="flex items-center gap-3 md:gap-4 flex-1">
+                    <button 
+                      onClick={() => toggleItem(item.id, item.checked, item.name)}
+                      className={`w-6 h-6 md:w-7 md:h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
+                        item.checked ? 'bg-green-500 border-green-500 text-white' : 'border-slate-200 text-transparent hover:border-primary'
+                      }`}
+                    >
+                      <CheckCircle2 size={18} />
+                    </button>
+                    <div className="flex flex-col">
+                      <span className={`font-bold text-base md:text-lg transition-all ${
+                        item.checked ? 'text-green-600/50 line-through' : 'text-slate-700'
+                      }`}>
+                        {item.name}
+                      </span>
+                      {item.checked && item.price !== undefined && (
+                        <span className="text-xs font-bold text-green-600">
+                          R$ {item.price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                   <button
                     onClick={() => deleteItem(item.id)}
                     className="w-10 h-10 md:w-12 md:h-12 rounded-xl md:rounded-2xl flex items-center justify-center text-slate-200 hover:text-red-500 hover:bg-red-50 transition-all duration-300"
@@ -302,6 +459,16 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {/* Total do Carrinho */}
+      {items.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center">
+          <span className="text-xs font-black uppercase tracking-widest text-slate-400">Total do Carrinho</span>
+          <span className="text-2xl font-black text-primary">
+            R$ {items.reduce((acc, item) => acc + (item.checked ? (item.price || 0) : 0), 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+          </span>
+        </div>
+      )}
     </div>
   );
 
@@ -426,6 +593,62 @@ export default function App() {
           </>
         )}
       </div>
+
+      {/* Modal de Preço */}
+      <AnimatePresence>
+        {priceModal.isOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[32px] p-8 w-full max-w-sm shadow-2xl"
+            >
+              <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-2">Quanto custou?</h3>
+              <p className="text-slate-500 text-sm mb-6">Digite o valor de <strong>{priceModal.itemName}</strong></p>
+              
+              <div className="relative mb-6 flex gap-2">
+                <div className="relative flex-1">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 font-bold text-slate-400">R$</span>
+                  <input
+                    autoFocus
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0,00"
+                    value={inputPrice}
+                    onChange={(e) => setInputPrice(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSavePrice()}
+                    className="w-full bg-slate-100 border-none rounded-2xl py-4 pl-12 pr-4 text-xl font-bold text-slate-700 focus:ring-2 focus:ring-primary/20 outline-none"
+                  />
+                </div>
+                <button
+                  onClick={toggleVoicePriceRecognition}
+                  className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
+                    isListeningPrice ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                  }`}
+                >
+                  <Mic size={24} />
+                </button>
+              </div>
+              
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPriceModal({ isOpen: false, itemId: null, itemName: "" })}
+                  className="flex-1 py-4 rounded-2xl font-bold text-slate-400 hover:bg-slate-50 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleSavePrice}
+                  className="flex-1 py-4 bg-primary text-white rounded-2xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all"
+                >
+                  Salvar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
