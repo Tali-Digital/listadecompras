@@ -345,8 +345,8 @@ export default function App() {
           onClick={toggleVoiceRecognition}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          className={`relative z-10 w-32 h-32 md:w-40 md:h-40 text-white rounded-full flex items-center justify-center shadow-[0_20px_40px_rgba(255,93,64,0.3)] transition-all duration-300 ${
-            isListening ? 'bg-red-600 scale-110' : 'bg-primary hover:bg-primary/90'
+          className={`relative z-10 w-32 h-32 md:w-40 md:h-40 rounded-full flex items-center justify-center shadow-[0_20px_40px_rgba(255,215,0,0.3)] transition-all duration-300 ${
+            isListening ? 'bg-red-600 text-white scale-110' : 'bg-yellow-400 text-slate-900 hover:bg-yellow-500'
           }`}
         >
           <Mic size={isDesktop ? 64 : 52} strokeWidth={2.5} className={isListening ? "animate-pulse" : ""} />
@@ -624,7 +624,7 @@ export default function App() {
                 <button
                   onClick={toggleVoicePriceRecognition}
                   className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
-                    isListeningPrice ? 'bg-red-500 text-white animate-pulse' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                    isListeningPrice ? 'bg-red-500 text-white animate-pulse' : 'bg-yellow-400 text-slate-900 hover:bg-yellow-500'
                   }`}
                 >
                   <Mic size={24} />
